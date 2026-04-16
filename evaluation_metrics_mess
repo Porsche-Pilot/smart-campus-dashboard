@@ -1,0 +1,230 @@
+"""
+=============================================================================
+  MESS DEMAND PREDICTION — COMPLETE EVALUATION & METRICS REPORT
+  Model : Random Forest Regressor
+  Data  : cleaned_mess_data.csv
+=============================================================================
+"""
+
+import pandas as pd
+import numpy as np
+import time
+import os
+import warnings
+
+warnings.filterwarnings("ignore")
+
+from sklearn.model_selection import TimeSeriesSplit, train_test_split
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import (
+    mean_absolute_error, mean_squared_error, r2_score
+)
+
+def mean_absolute_percentage_error(y_true, y_pred):
+    y_true_safe = np.where(y_true == 0, 1e-6, y_true)
+    return np.mean(np.abs((y_true - y_pred) / y_true_safe)) * 100
+
+def main():
+    print("=============================================================================")
+    print("  MESS DEMAND PREDICTION MODEL — FULL EVALUATION")
+    print("=============================================================================\n")
+
+    t0 = time.time()
+    print("⏳ [1/7] Loading data and engineering features …")
+
+    # 1. LOAD DATA
+    df = pd.read_csv("cleaned_mess_data.csv")
+    df.columns = df.columns.str.strip()
+    df.rename(columns={
+        'Student_ID': 'student_id',
+        'Meal': 'meal',
+        'Date': 'date',
+        'Scan_Time': 'time'
+    }, inplace=True)
+
+    # 2. CREATE DATETIME
+    df['datetime'] = pd.to_datetime(df['date'] + ' ' + df['time'], errors='coerce')
+    df.dropna(subset=['datetime'], inplace=True)
+    df['day_of_week'] = df['datetime'].dt.dayofweek
+
+    # 3. FILTER VALID ENTRIES
+    if 'Status' in df.columns:
+        df = df[df['Status'] == 1]
+
+    # 4. AGGREGATE DEMAND
+    demand = df.groupby(['date', 'meal', 'day_of_week']).size().reset_index(name='students_count')
+    demand['date_obj'] = pd.to_datetime(demand['date'])
+    demand = demand.sort_values(by=['meal', 'date_obj']).reset_index(drop=True)
+
+    # 5. FEATURE ENGINEERING
+    demand['prev_day'] = demand.groupby('meal')['students_count'].shift(1)
+    demand['prev2_day'] = demand.groupby('meal')['students_count'].shift(2)
+    demand['rolling_avg'] = demand.groupby('meal')['students_count'] \
+        .rolling(3).mean().reset_index(0, drop=True)
+    demand['trend'] = demand['prev_day'] - demand['prev2_day']
+
+    # 6. TARGET
+    # Predicting NEXT day's demand for the same meal
+    demand['target'] = demand.groupby('meal')['students_count'].shift(-1)
+    demand = demand.dropna()
+
+    print(f"   ✅ Data preprocessed. Total valid rows for ML: {len(demand):,}")
+    print()
+
+    # Safety Check
+    if len(demand) < 10:
+        print("⚠️ Not enough data for robust ML evaluation. Exiting.")
+        return
+
+    # ─────────────────────────────────────────────────────────────
+    # 2. TRAIN / TEST SPLIT (Temporal Validation)
+    # ─────────────────────────────────────────────────────────────
+    print("📊 [2/7] Splitting data for evaluation (80% Train, 20% Test) …")
+    
+    # Sort by date properly to mimic temporal time-series split
+    demand = demand.sort_values('date_obj').reset_index(drop=True)
+
+    features = ['students_count', 'prev_day', 'prev2_day', 'rolling_avg', 'trend', 'day_of_week']
+    X = demand[features]
+    y = demand['target']
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, shuffle=False  # Keep time sequence intact
+    )
+
+    print(f"   Train set: {len(X_train):,} rows")
+    print(f"   Test  set: {len(X_test):,} rows")
+    print()
+
+    # ─────────────────────────────────────────────────────────────
+    # 3. MODEL TRAINING
+    # ─────────────────────────────────────────────────────────────
+    print("🧠 [3/7] Training Random Forest Regressor …")
+    
+    train_start = time.time()
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+    
+    y_pred = model.predict(X_test)
+    y_pred_rounded = np.round(y_pred).astype(int)
+    
+    print(f"   ✅ Model trained in {time.time() - train_start:.2f}s")
+    print()
+
+    # ─────────────────────────────────────────────────────────────
+    # 4. REGRESSION METRICS
+    # ─────────────────────────────────────────────────────────────
+    print("=" * 70)
+    print("  📈  REGRESSION METRICS (on Test Set)")
+    print("=" * 70)
+    
+    mae = mean_absolute_error(y_test, y_pred)
+    mse = mean_squared_error(y_test, y_pred)
+    rmse = np.sqrt(mse)
+    r2 = r2_score(y_test, y_pred)
+    mape = mean_absolute_percentage_error(y_test, y_pred)
+
+    print(f"   MAE  (Mean Absolute Error)     : {mae:.2f} students")
+    print(f"   MSE  (Mean Squared Error)      : {mse:.2f}")
+    print(f"   RMSE (Root Mean Squared Error) : {rmse:.2f} students")
+    print(f"   R²   (Coefficient of Determination) : {r2:.4f}")
+    print(f"   MAPE (Mean Abs Pct Error)      : {mape:.2f}%")
+    print()
+
+    # ─────────────────────────────────────────────────────────────
+    # 5. CROSS-VALIDATION (TimeSeriesSplit)
+    # ─────────────────────────────────────────────────────────────
+    print("=" * 70)
+    print("  🔄  3-FOLD TIME SERIES CROSS-VALIDATION")
+    print("=" * 70)
+
+    tscv = TimeSeriesSplit(n_splits=3)
+    cv_r2, cv_mae, cv_rmse = [], [], []
+
+    for fold, (t_idx, v_idx) in enumerate(tscv.split(X)):
+        X_tr, X_val = X.iloc[t_idx], X.iloc[v_idx]
+        y_tr, y_val = y.iloc[t_idx], y.iloc[v_idx]
+
+        cv_model = RandomForestRegressor(n_estimators=100, random_state=42)
+        cv_model.fit(X_tr, y_tr)
+        y_v_pred = cv_model.predict(X_val)
+
+        cv_r2.append(r2_score(y_val, y_v_pred))
+        cv_mae.append(mean_absolute_error(y_val, y_v_pred))
+        cv_rmse.append(np.sqrt(mean_squared_error(y_val, y_v_pred)))
+        print(f"   Fold {fold+1}: RMSE = {cv_rmse[-1]:.2f}, R² = {cv_r2[-1]:.4f}, MAE = {cv_mae[-1]:.2f}")
+
+    print("   ---")
+    print(f"   Avg RMSE : {np.mean(cv_rmse):.2f} ± {np.std(cv_rmse):.2f}")
+    print(f"   Avg R²   : {np.mean(cv_r2):.4f} ± {np.std(cv_r2):.4f}")
+    print(f"   Avg MAE  : {np.mean(cv_mae):.2f} ± {np.std(cv_mae):.2f}")
+    print()
+
+    # ─────────────────────────────────────────────────────────────
+    # 6. FEATURE IMPORTANCE
+    # ─────────────────────────────────────────────────────────────
+    print("=" * 70)
+    print("  🏆  FEATURE IMPORTANCE (Random Forest)")
+    print("=" * 70)
+
+    importances = model.feature_importances_
+    feat_imp = pd.DataFrame({
+        "Feature": features,
+        "Importance": importances
+    }).sort_values("Importance", ascending=False)
+
+    for _, row in feat_imp.iterrows():
+        bar = "█" * int(row["Importance"] * 50)
+        print(f"   {row['Feature']:<16s}  {row['Importance']:.4f}  {bar}")
+    print()
+
+    # ─────────────────────────────────────────────────────────────
+    # 7. RESIDUAL ANALYSIS
+    # ─────────────────────────────────────────────────────────────
+    print("=" * 70)
+    print("  📉  RESIDUAL ANALYSIS")
+    print("=" * 70)
+
+    residuals = y_test.values - y_pred
+    print(f"   Mean residual        : {residuals.mean():.4f} (ideal = 0)")
+    print(f"   Std of residuals     : {residuals.std():.4f}")
+    print(f"   Max overestimate     : {residuals.min():.2f} students (Model predicted too many)")
+    print(f"   Max underestimate    : {residuals.max():.2f} students (Model predicted too few)")
+    print()
+
+    # ─────────────────────────────────────────────────────────────
+    # 8. EXPORT AND SAVE
+    # ─────────────────────────────────────────────────────────────
+    # Create final dataset with predictions added for ALL records (like original script)
+    model.fit(X, y)
+    demand['predicted_students'] = np.round(model.predict(X)).astype(int)
+
+    out_file = "predicted_messhrs.csv"
+    demand.to_csv(out_file, index=False)
+
+    # Save Metrics CSV
+    summary = {
+        "Metric": ["MAE", "MSE", "RMSE", "R²", "MAPE (%)", 
+                   "CV Avg RMSE", "CV Avg R²", "CV Avg MAE"],
+        "Value": [
+            round(mae, 4), round(mse, 4), round(rmse, 4), round(r2, 4), round(mape, 2),
+            round(np.mean(cv_rmse), 4), round(np.mean(cv_r2), 4), round(np.mean(cv_mae), 4)
+        ]
+    }
+    summary_df = pd.DataFrame(summary)
+    summary_df.to_csv("mess_evaluation_metrics_report.csv", index=False)
+
+    # Save feature importances CSV
+    feat_imp.to_csv("mess_feature_importances.csv", index=False)
+
+    print("=" * 70)
+    print(f"  ✅  ALL DONE!  Total elapsed: {time.time() - t0:.1f}s")
+    print("=" * 70)
+    print("  Saved files:")
+    print("    → mess_evaluation_metrics_report.csv  (Metrics summary)")
+    print("    → mess_feature_importances.csv        (Feature analysis)")
+    print("    → predicted_messhrs.csv               (Full predictions data)")
+    print()
+
+if __name__ == "__main__":
+    main()

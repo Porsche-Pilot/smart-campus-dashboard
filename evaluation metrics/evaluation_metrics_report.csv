@@ -1,0 +1,23 @@
+Metric,Value
+MAE,0.2013
+MSE,0.1087
+RMSE,0.3297
+R²,0.2052
+MAPE (%),20.13
+Accuracy,0.8418
+Precision,0.8723
+Recall,0.95
+F1 Score,0.9095
+Specificity,0.2886
+Sensitivity,0.95
+CV R² (mean),0.103
+CV R² (std),0.0039
+CV MAE (mean),0.2011
+CV RMSE (mean),0.3508
+True Negatives,33024.0
+False Positives,81424.0
+False Negatives,29298.0
+True Positives,556254.0
+Alert Count,8029.0
+OK Count,26971.0
+Total Pairs,35000.0
