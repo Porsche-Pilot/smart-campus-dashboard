@@ -30,7 +30,7 @@ div[data-testid="stRadio"] {
 }
 
 div[data-testid="stRadio"] > div {
-    background: rgba(15, 23, 42, 0.6);
+    background: rgba(255, 255, 255, 1);
     padding: 6px;
     border-radius: 10px;
     display: flex;
@@ -50,7 +50,8 @@ div[data-testid="stRadio"] label {
 
 /* hover */
 div[data-testid="stRadio"] label:hover {
-    background: rgba(255,255,255,0.08);
+    background: rgba(0,0,0,1);
+    color :rgba(255,255,255,1);
 }
 
 /* selected */
